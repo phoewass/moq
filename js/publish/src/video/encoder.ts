@@ -5,6 +5,7 @@ import type * as Moq from "@moq/lite";
 import { Time } from "@moq/lite";
 import { Effect, type Getter, Signal } from "@moq/signals";
 import type { Source } from "./types";
+import { FramePadder } from "./padder";
 
 export interface EncoderProps {
 	enabled?: boolean | Signal<boolean>;
@@ -77,6 +78,7 @@ export class Encoder {
 		let lastKeyframe: Time.Micro | undefined;
 
 		effect.set(this.active, true, false);
+		const padder = new FramePadder(1280, 720);
 
 		effect.spawn(async () => {
 			const encoder = new VideoEncoder({
@@ -107,6 +109,9 @@ export class Encoder {
 
 				if (encoder.state !== "configured") return;
 
+				// 2. Pad the frame!
+                const paddedFrame = padder.pad(frame);                
+
 				// This doesn't need to be reactive.
 				const interval = this.config.peek()?.keyframeInterval ?? Time.Milli.fromSecond(2 as Time.Second);
 
@@ -116,7 +121,11 @@ export class Encoder {
 					lastKeyframe = frame.timestamp as Time.Micro;
 				}
 
-				encoder.encode(frame, { keyFrame });
+				// 3. Encode the NEW padded frame
+                encoder.encode(paddedFrame, { keyFrame });
+                
+                // 4. CRITICAL: Clean up the padded frame immediately so you don't leak GPU memory!
+                paddedFrame.close();
 			});
 		});
 	}
@@ -226,14 +235,17 @@ export class Encoder {
 		const frame = effect.get(this.frame);
 		if (!frame) return;
 
-		const maxPixels = user?.maxPixels ?? frame.codedWidth * frame.codedHeight;
-		const ratio = Math.min(Math.sqrt(maxPixels / (frame.codedWidth * frame.codedHeight)), 1);
-
 		// Make sure width/height is a power of 16
 		// TODO should this be on a per-codec basis?
-		const width = 16 * Math.floor((frame.codedWidth * ratio) / 16);
-		const height = 16 * Math.floor((frame.codedHeight * ratio) / 16);
-
+		// 1. Figure out a safe height based on the pixel budget (assuming 16:9 ratio)
+		const maxPixels = user?.maxPixels ?? (1280 * 720); // Default to 720p budget
+        const targetHeight = Math.sqrt(maxPixels / (16 / 9));
+        
+        // 2. Clamp height to 720 max, and align to 16
+        let height = 16 * Math.floor(Math.min(targetHeight, 720) / 16);
+        
+        // 3. FORCE width to be exactly 16:9 based on the height
+        let width = 16 * Math.floor((height * (16 / 9)) / 16);
 		effect.set(this.#dimensions, { width, height });
 	}
 

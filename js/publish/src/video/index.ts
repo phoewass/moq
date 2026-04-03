@@ -92,8 +92,8 @@ export class Root {
 		const catalog: Catalog.Video = {
 			renditions,
 			display: {
-				width: Catalog.u53(display.width),
-				height: Catalog.u53(display.height),
+				width: Catalog.u53(1280),
+				height: Catalog.u53(720),
 			},
 			flip: effect.get(this.flip) ?? undefined,
 		};
