@@ -6,7 +6,7 @@ import * as Source from "./source";
 const OBSERVED = ["url", "name", "muted", "invisible", "source"] as const;
 type Observed = (typeof OBSERVED)[number];
 
-type SourceType = "camera" | "screen" | "file";
+type SourceType = "camera+mic" | "camera" | "mic" | "screen" | "file";
 
 // Close everything when this element is garbage collected.
 // This is primarily to avoid a console.warn that we didn't close() before GC.
@@ -128,11 +128,11 @@ export default class MoqPublish extends HTMLElement {
 		} else if (name === "name") {
 			this.broadcast.name.set(Moq.Path.from(newValue ?? ""));
 		} else if (name === "source") {
-			if (newValue === "camera" || newValue === "screen" || newValue === "file" || newValue === null) {
-				this.state.source.set(newValue as SourceType | undefined);
-			} else {
-				throw new Error(`Invalid source: ${newValue}`);
-			}
+			if (newValue === "camera" || newValue === "screen" || newValue === "file" || newValue === "mic" || newValue === null) {
+                this.state.source.set(newValue as SourceType | undefined);
+            } else {
+                throw new Error(`Invalid source: ${newValue}`);
+            }
 		} else if (name === "muted") {
 			this.state.muted.set(newValue !== null);
 		} else if (name === "invisible") {
@@ -143,31 +143,59 @@ export default class MoqPublish extends HTMLElement {
 		}
 	}
 
+	publishMic(effect: Effect) {
+		console.log("[MoQ] 🎤 Booting dedicated microphone source...");
+		const audio = new Source.Microphone({ enabled: this.#audioEnabled });
+		
+		this.signals.run((effect) => {
+			const source = effect.get(audio.source);
+			if (source) {
+				console.log("[MoQ] ✅ Microphone track acquired! Piping to broadcast...");
+			} else {
+				console.log("[MoQ] ⚠️ Microphone track is currently undefined.");
+			}
+			this.broadcast.audio.source.set(source);
+		});
+
+		effect.set(this.audio, audio);
+
+		effect.cleanup(() => {
+			console.log("[MoQ] 🛑 Tearing down microphone source.");
+			audio.close();
+		});
+	}
+
+	publishCamera(effect: Effect) {
+		const video = new Source.Camera({ enabled: this.#videoEnabled });
+		this.signals.run((effect) => {
+			const source = effect.get(video.source);
+			this.broadcast.video.source.set(source);
+		});
+
+		effect.set(this.video, video);
+
+		effect.cleanup(() => {
+			video.close();
+		});
+	}
+
 	#runSource(effect: Effect) {
 		const source = effect.get(this.state.source);
 		if (!source) return;
 
+		if (source == "camera+mic") {
+			this.publishMic(effect)
+			this.publishCamera(effect)
+			return;
+		}
+
+		if (source === "mic") {
+			this.publishMic(effect)
+            return;
+        }
+
 		if (source === "camera") {
-			const video = new Source.Camera({ enabled: this.#videoEnabled });
-			this.signals.run((effect) => {
-				const source = effect.get(video.source);
-				this.broadcast.video.source.set(source);
-			});
-
-			const audio = new Source.Microphone({ enabled: this.#audioEnabled });
-			this.signals.run((effect) => {
-				const source = effect.get(audio.source);
-				this.broadcast.audio.source.set(source);
-			});
-
-			effect.set(this.video, video);
-			effect.set(this.audio, audio);
-
-			effect.cleanup(() => {
-				video.close();
-				audio.close();
-			});
-
+			this.publishCamera(effect)
 			return;
 		}
 

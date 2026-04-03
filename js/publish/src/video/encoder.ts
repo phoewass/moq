@@ -5,6 +5,7 @@ import type * as Moq from "@moq/lite";
 import { Time } from "@moq/lite";
 import { Effect, type Getter, Signal } from "@moq/signals";
 import type { Source } from "./types";
+import { videoEncoderSupport } from "../support"
 
 export interface EncoderProps {
 	enabled?: boolean | Signal<boolean>;
@@ -248,7 +249,10 @@ export class Encoder {
 		const config = effect.get(this.config);
 		const required = config?.codec ?? "";
 
+		console.groupCollapsed(`[Video Encoding] best codec`);
+
 		const dimensions = effect.get(this.#dimensions);
+		console.log(dimensions)
 		if (!dimensions) return;
 
 		// A list of codecs to try, in order of preference.
@@ -311,30 +315,29 @@ export class Encoder {
 		// Try hardware encoding first.
 		// We can't reliably detect hardware encoding on Firefox: https://github.com/w3c/webcodecs/issues/896
 		if (!Util.Hacks.isFirefox) {
+			console.log(`Not firefox`);
 			for (const codec of HARDWARE_CODECS) {
+				console.log(`Try software encoding: ${codec}`);
 				if (!codec.startsWith(required)) continue;
 
 				const hardwareAcceleration: HardwareAcceleration = "prefer-hardware";
 
-				const hardware: VideoEncoderConfig = {
-					codec,
-					width: dimensions.width,
-					height: dimensions.height,
-					latencyMode: "realtime",
-					hardwareAcceleration,
-					avc: codec.startsWith("avc1") ? { format: "annexb" } : undefined,
-					// @ts-expect-error Typescript needs to be updated.
-					hevc: codec.startsWith("hev1") ? { format: "annexb" } : undefined,
-				};
-
-				const { supported } = await VideoEncoder.isConfigSupported(hardware);
-				if (supported) return { codec, hardwareAcceleration };
+				const support = await videoEncoderSupport(codec, dimensions.width, dimensions.height)
+				console.log(`Software encoding: ${codec} supported: ${support}`);
+				if (support.hardware) {
+					console.groupEnd();
+					return { codec, hardwareAcceleration };
+				}
 			}
 		}
 
+
 		// Try software encoding.
 		for (const codec of SOFTWARE_CODECS) {
-			if (!codec.startsWith(required)) continue;
+			if (!codec.startsWith(required)) {
+				console.log(`Try software encoding: ${codec} not start with ${required}`);
+				continue;
+			}
 
 			const hardwareAcceleration: HardwareAcceleration = "prefer-software";
 
@@ -350,9 +353,13 @@ export class Encoder {
 			};
 
 			const { supported } = await VideoEncoder.isConfigSupported(software);
-			if (supported) return { codec, hardwareAcceleration };
+			if (supported) {
+				console.groupEnd();
+				return { codec, hardwareAcceleration };
+			}
 		}
 
+		console.groupEnd();
 		throw new Error("no supported codec");
 	}
 

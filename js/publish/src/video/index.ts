@@ -80,6 +80,7 @@ export class Root {
 		if (!source) return;
 
 		const display = effect.get(this.display);
+		console.log("[Publish] source", source)
 		if (!display) return;
 
 		const hdConfig = effect.get(this.hd.catalog);
@@ -98,6 +99,7 @@ export class Root {
 			flip: effect.get(this.flip) ?? undefined,
 		};
 
+		console.log("[Publish] catalog", catalog)
 		effect.set(this.catalog, catalog);
 	}
 

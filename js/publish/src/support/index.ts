@@ -57,27 +57,71 @@ async function audioEncoderSupported(codec: keyof typeof CODECS): Promise<boolea
 	return res.supported === true;
 }
 
-async function videoEncoderSupported(codec: keyof typeof CODECS): Promise<Codec> {
-	const software = await VideoEncoder.isConfigSupported({
-		codec: CODECS[codec],
-		width: 1280,
-		height: 720,
-		hardwareAcceleration: "prefer-software",
-	});
+function mimeType(codec: string): string {
+	if (codec.startsWith("aac")) return `audio/mp4; codecs="${codec}"`
+	if (codec.startsWith("opus")) return `audio/ogg; codecs="${codec}"`
+	if (codec.startsWith("av1")) return `video/mp4; codecs="${codec}"`
+	if (codec.startsWith("h264")) return `video/mp4; codecs="${codec}"`
+	if (codec.startsWith("h265")) return `video/mp4; codecs="${codec}"`
+	if (codec.startsWith("vp9")) return `video/webm; codecs="${codec}"`
+	if (codec.startsWith("vp8")) return `video/webm; codecs="${codec}"`
+	return ""
+}
 
-	// We can't reliably detect hardware encoding on Firefox: https://github.com/w3c/webcodecs/issues/896
+// --- Media Capabilities ---
+async function checkMediaCapabilities(codec: string): Promise<{ supported: boolean; powerEfficient: boolean }> {
+	if (!navigator.mediaCapabilities) return { supported: false, powerEfficient: false };
+
+	try {
+		const info = await navigator.mediaCapabilities.encodingInfo({
+			type: "webrtc",
+			video: {
+				contentType: mimeType(codec),
+				width: 1920,
+				height: 1080,
+				bitrate: 5000000,
+				framerate: 30,
+			},
+		});
+		return { supported: info.supported, powerEfficient: info.powerEfficient };
+	} catch (e) {
+		return { supported: false, powerEfficient: false };
+	}
+}
+
+async function videoEncoderSupported(codecName: keyof typeof CODECS): Promise<Codec> {
+	return videoEncoderSupport(CODECS[codecName], 1280, 720)
+}
+
+export async function videoEncoderSupport(codec: string,  width: number, height: number): Promise<Codec> {
 	const hardware = await VideoEncoder.isConfigSupported({
-		codec: CODECS[codec],
-		width: 1280,
-		height: 720,
+		codec: codec,
+		width: 1920,
+		height: 1080,
+		latencyMode: "realtime",
 		hardwareAcceleration: "prefer-hardware",
+		avc: codec.startsWith("avc1") ? { format: "annexb" } : undefined,
+		// @ts-expect-error Typescript needs to be updated.
+		hevc: codec.startsWith("hev1") ? { format: "annexb" } : undefined,
 	});
 
 	const unknown = isFirefox || hardware.config?.hardwareAcceleration !== "prefer-hardware";
 
+	console.groupCollapsed(`[Video Encoding Support] Firefox Heuristics for ${codec.toUpperCase()}`);
+	console.log(`WebCodecs HW Supported: ${hardware.supported}`);
+
+	const mc = await checkMediaCapabilities(codec);
+	console.log(`MediaCapabilities -> Supported: ${mc.supported}, PowerEfficient: ${mc.powerEfficient}`);
+
+	// If Firefox admits it is power efficient via the older API, we can safely assume HW acceleration.
+	if (mc.powerEfficient) {
+		console.log(`✅ Conclusion: MediaCapabilities verified power efficiency. Guessing HW is TRUE.`);
+	} 
+	console.groupEnd();
+
 	return {
 		hardware: unknown ? undefined : hardware.supported === true,
-		software: software.supported === true,
+		software: false,
 	};
 }
 

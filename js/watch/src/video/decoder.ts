@@ -7,6 +7,7 @@ import { Effect, type Getter, Signal } from "@moq/signals";
 import type { BufferedRanges } from "../backend";
 import type { Backend, Stats } from "./backend";
 import type { Source } from "./source";
+import { videoDecoderSupport } from "../support"; 
 
 // The amount of time to wait before considering the video to be buffering.
 const BUFFERING = 500 as Time.Milli;
@@ -243,7 +244,9 @@ class DecoderTrack {
 
 					const wait = this.source.sync.wait(timestamp).then(() => true);
 					const ok = await Promise.race([wait, effect.cancel]);
-					if (!ok) return;
+					
+					// FIX: Ensure the decoder wasn't closed while we were awaiting!
+            		if (!ok || decoder.state === "closed") return;
 
 					if (timestamp < (this.timestamp.peek() ?? 0)) {
 						// Late frame, don't render it.
@@ -347,6 +350,9 @@ class DecoderTrack {
 					final: false,
 				};
 
+				// FIX: Prevent decoding into a closed decoder
+				if (decoder.state === "closed") break;
+
 				decoder.decode(chunk);
 			}
 		});
@@ -413,6 +419,9 @@ class DecoderTrack {
 									this.#addBuffered(start, end);
 								}
 								previous = sample.timestamp as Time.Micro;
+
+								// FIX: Prevent decoding into a closed decoder
+								if (decoder.state === "closed") break;
 
 								decoder.decode(chunk);
 							}
@@ -488,13 +497,35 @@ function mergeBufferedRanges(a: BufferedRanges, b: BufferedRanges): BufferedRang
 	return result;
 }
 
-async function supported(config: Catalog.VideoConfig): Promise<boolean> {
-	const description = config.description ? Util.Hex.toBytes(config.description) : undefined;
-	const { supported } = await VideoDecoder.isConfigSupported({
-		codec: config.codec,
-		description,
-		optimizeForLatency: config.optimizeForLatency ?? true,
-	});
 
-	return supported ?? false;
+var supportedCache: Record<string, boolean> = {}
+async function supported(config: Catalog.VideoConfig): Promise<boolean> {
+	let result = supportedCache[config.codec]
+	if (result === undefined) {
+		result = supportedCache[config.codec] = await isSupported(config)
+	}
+	return result
+}
+
+async function isSupported(config: Catalog.VideoConfig): Promise<boolean> {
+	const codecSupport =  await videoDecoderSupport(config.codec);
+	if (!codecSupport) {
+		return false;
+	}
+	
+	if (codecSupport.hardware) return true
+
+	// If hardware is explicitly 'undefined' (our Firefox workaround) but software is 'true', allow it!
+	if (codecSupport.hardware === undefined && codecSupport.software === true) {
+		// Safety rail: Block AV1 software decoding because it will throttle the CPU
+		if (config.codec.startsWith("av01")) {
+			console.warn(`[Support Check] Rejecting AV1 on software decoding (too heavy).`);
+			return false; 
+		}
+
+		console.log(`[Support Check] Allowing ${config.codec} via software fallback for Firefox.`);
+		return true;
+	}
+
+	return false;
 }
