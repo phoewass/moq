@@ -93,9 +93,11 @@ export class Encoder {
 				},
 			});
 
-			effect.cleanup(() => encoder.close());
+			effect.cleanup(() => {
+				if (encoder.state !== "closed") encoder.close();
+			});
 
-			effect.run(() => {
+			effect.run((effect) => {
 				const config = effect.get(this.#config);
 				if (!config) return;
 

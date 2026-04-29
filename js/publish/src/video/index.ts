@@ -53,9 +53,16 @@ export class Root {
 		effect.cleanup(() => reader.cancel());
 
 		effect.spawn(async () => {
+			console.log("[Root] 🎞️ Frame reader started...");
 			for (;;) {
 				const next = await Promise.race([reader.read(), effect.cancel]);
 				if (!next?.value) break;
+				if (!next || next.done) {
+                    console.log("[Root] ⏹️ Frame reader done or cancelled.");
+                    break;
+                }
+
+				console.log("[Root] 🖼️ New frame received:", next.value.timestamp);
 
 				this.frame.update((prev) => {
 					prev?.close();
@@ -77,30 +84,53 @@ export class Root {
 
 	#runCatalog(effect: Effect) {
 		const source = effect.get(this.source);
-		if (!source) return;
-
-		const display = effect.get(this.display);
-		console.log("[Publish] source", source)
-		if (!display) return;
+		if (!source) {
+			this.catalog.set(undefined);
+			return;
+		}
 
 		const hdConfig = effect.get(this.hd.catalog);
-		const sdConfig = effect.get(this.sd.catalog);
+        const sdConfig = effect.get(this.sd.catalog);
 
-		const renditions: Record<string, Catalog.VideoConfig> = {};
-		if (hdConfig) renditions[Root.TRACK_HD] = hdConfig;
-		if (sdConfig) renditions[Root.TRACK_SD] = sdConfig;
+		console.log(`[Root] 📈 Encoder Status -> HD: ${!!hdConfig}, SD: ${!!sdConfig}`);
+	
+		// --- THE FIX ---
+        // If neither encoder has generated a config yet, ABORT.
+        // Do not let an empty catalog escape to the relay!
+        if (!hdConfig && !sdConfig) {
+            console.log("[Publish] ⏳ Waiting for encoders to warm up before publishing catalog...");
+            return; 
+        }
 
+        const renditions: Record<string, Catalog.VideoConfig> = {};
+        if (hdConfig) renditions[Root.TRACK_HD] = hdConfig;
+        if (sdConfig) renditions[Root.TRACK_SD] = sdConfig;
+		// 1. Get display info but DON'T return if it's missing.
+		// We fallback to the track's native settings if the processor hasn't yielded a frame yet.
+		const display = effect.get(this.display);
+		if (!display) {
+			console.log("[Publish] source, display info not ready", source)
+		} else {
+			console.log("[Publish] source", source, display)
+		}
+		const settings = source.getSettings();
+
+		const width = display?.width ?? settings.width ?? 0;
+		const height = display?.height ?? settings.height ?? 0;
+
+		// 2. Publish the catalog even if dimensions are 0/0. 
+		// This ensures the subscriber "sees" the tracks immediately.
 		const catalog: Catalog.Video = {
 			renditions,
 			display: {
-				width: Catalog.u53(display.width),
-				height: Catalog.u53(display.height),
+				width: Catalog.u53(width),
+				height: Catalog.u53(height),
 			},
 			flip: effect.get(this.flip) ?? undefined,
 		};
 
-		console.log("[Publish] catalog", catalog)
-		effect.set(this.catalog, catalog);
+		console.log("[Publish] 🚀 Publishing full catalog:", catalog);
+		this.catalog.set(catalog);
 	}
 
 	close() {
